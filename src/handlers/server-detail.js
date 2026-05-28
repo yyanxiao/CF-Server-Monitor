@@ -697,7 +697,7 @@ export async function handleServerDetail(request, env, sys, viewId) {
         <div class="chart-card-header">
           <span class="chart-title">
             <span class="chart-title-icon">▸</span>
-            Latency Monitor (China)
+            Latency Monitor
           </span>
           <div style="display: flex; gap: 20px; font-size: 11px; font-weight: 500;">
             <span style="color: var(--accent-green);">CT <b id="t-ct">${server.ping_ct || '0'}ms</b></span>

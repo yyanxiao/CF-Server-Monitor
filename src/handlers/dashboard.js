@@ -99,237 +99,6 @@ export async function handleDashboard(request, env, sys) {
     return authResponse(sys.site_title);
   }
 
-  const isLoggedIn = checkAuth(request, env);
-  
-  let query = 'SELECT * FROM servers';
-  if (!isLoggedIn) {
-    query += " WHERE is_hidden != '1'";
-  }
-  query += ' ORDER BY sort_order ASC';
-  
-  const { results } = await env.DB.prepare(query).all();
-  
-  const now = Date.now();
-
-  // 统计全局数据
-  let globalOnline = 0, globalOffline = 0;
-  let globalSpeedIn = 0, globalSpeedOut = 0;
-  let globalNetTx = 0, globalNetRx = 0;
-  const groups = {};
-  const groupOrder = [];
-  const countryStats = {};
-
-  if (results && results.length > 0) {
-    for (const server of results) {
-      const lastUpdated = new Date(server.last_updated).getTime();
-      const isOnline = (now - lastUpdated) < 120000;
-      
-      if (isOnline) {
-        globalOnline++;
-        globalSpeedIn += parseFloat(server.net_in_speed) || 0;
-        globalSpeedOut += parseFloat(server.net_out_speed) || 0;
-      } else {
-        globalOffline++;
-      }
-      
-      const rx_val = sys.auto_reset_traffic === 'true' 
-        ? parseFloat(server.monthly_rx || 0) 
-        : parseFloat(server.net_rx || 0);
-      const tx_val = sys.auto_reset_traffic === 'true' 
-        ? parseFloat(server.monthly_tx || 0) 
-        : parseFloat(server.net_tx || 0);
-
-      globalNetTx += tx_val;
-      globalNetRx += rx_val;
-
-      // 分组（按首次出现顺序记录分组）
-      const grpName = server.server_group || 'Default';
-      if (!groups[grpName]) {
-        groups[grpName] = [];
-        groupOrder.push(grpName);
-      }
-      groups[grpName].push(server);
-
-      // 国家统计
-      let cCodeMap = (server.country || 'xx').toUpperCase();
-      if (cCodeMap === 'TW') cCodeMap = 'CN';
-      if (cCodeMap !== 'XX') {
-        countryStats[cCodeMap] = (countryStats[cCodeMap] || 0) + 1;
-      }
-    }
-  }
-
-  // 生成过滤器标签
-  let filterTagsHtml = `<span class="filter-tag active" data-filter="all">[All] ${results.length}</span>`;
-  for (const [code, count] of Object.entries(countryStats).sort()) {
-    filterTagsHtml += `<span class="filter-tag" data-filter="${code.toLowerCase()}">
-      <img src="https://flagcdn.com/16x12/${code.toLowerCase()}.png" alt="${code}"> ${code} [${count}]
-    </span>`;
-  }
-
-  // 生成卡片和表格内容
-  let cardContentHtml = '';
-  let tableBodyHtml = '';
-
-  if (groupOrder.length === 0) {
-    cardContentHtml = '<div class="empty-state">[!] 暂无服务器，请在 <a href="/admin" style="color: var(--accent-cyan);">后台管理</a> 中添加</div>';
-  } else {
-    for (const grpName of groupOrder) {
-      const grpServers = groups[grpName];
-      cardContentHtml += `<div class="group-section">
-        <div class="group-header" data-group="${grpName}">
-          <span class="prompt-sign">#</span> ${grpName} 
-          <span class="group-count">[${grpServers.length}]</span>
-        </div>
-        <div class="servers-grid">`;
-      
-      for (const server of grpServers) {
-        const lastUpdated = new Date(server.last_updated).getTime();
-        const isOnline = (now - lastUpdated) < 120000;
-        const statusColor = isOnline ? 'var(--accent-green)' : 'var(--accent-red)';
-        const statusText = isOnline ? 'ONLINE' : 'OFFLINE';
-        
-        const cpu = parseFloat(server.cpu || 0).toFixed(1);
-        const ram = parseFloat(server.ram || 0).toFixed(1);
-        const disk = parseFloat(server.disk || 0).toFixed(1);
-        const netInSpeed = formatBytes(server.net_in_speed);
-        const netOutSpeed = formatBytes(server.net_out_speed);
-        const monthlyRx = formatBytes(server.monthly_rx);
-        const monthlyTx = formatBytes(server.monthly_tx);
-        
-        const cCode = (server.country || 'xx').toLowerCase();
-        const flagHtml = cCode !== 'xx' 
-          ? `<img src="https://flagcdn.com/24x18/${cCode}.png" alt="${cCode}" style="vertical-align: middle; margin-right: 5px; border-radius: 2px; filter: brightness(0.9);">` 
-          : '🏳️';
-        
-        // 元数据
-        let metaHtml = '';
-        if (sys.show_price === 'true' && server.price) {
-          metaHtml += `<div class="card-meta">💰 ${server.price}</div>`;
-        }
-        if (sys.show_expire === 'true' && server.expire_date) {
-          const expTime = new Date(server.expire_date).getTime();
-          if (!isNaN(expTime)) {
-            const diff = expTime - now;
-            const expireText = diff > 0 
-              ? Math.ceil(diff / (1000 * 3600 * 24)) + 'd' 
-              : '<span style="color:var(--accent-red);">EXPIRED</span>';
-            metaHtml += `<div class="card-meta">📅 ${expireText}</div>`;
-          }
-        }
-
-        // 徽章
-        let badgesHtml = '';
-        if (sys.show_bw === 'true' && server.bandwidth) 
-          badgesHtml += `<span class="badge badge-bw">${server.bandwidth}</span>`;
-        if (sys.show_tf === 'true' && server.traffic_limit) 
-          badgesHtml += `<span class="badge badge-tf">${server.traffic_limit}</span>`;
-        if (server.ip_v4 === '1') badgesHtml += `<span class="badge badge-v4">IPv4</span>`;
-        if (server.ip_v6 === '1') badgesHtml += `<span class="badge badge-v6">IPv6</span>`;
-
-        // 延迟信息
-        const pingHtml = `
-          <div class="ping-panel">
-            <div class="ping-item"><span class="ping-label">CT</span><span class="ping-value" style="color:${getPingColor(server.ping_ct)}">${server.ping_ct === '0' ? 'TIMEOUT' : server.ping_ct + 'ms'}</span></div>
-            <div class="ping-item"><span class="ping-label">CU</span><span class="ping-value" style="color:${getPingColor(server.ping_cu)}">${server.ping_cu === '0' ? 'TIMEOUT' : server.ping_cu + 'ms'}</span></div>
-            <div class="ping-item"><span class="ping-label">CM</span><span class="ping-value" style="color:${getPingColor(server.ping_cm)}">${server.ping_cm === '0' ? 'TIMEOUT' : server.ping_cm + 'ms'}</span></div>
-            <div class="ping-item"><span class="ping-label">BD</span><span class="ping-value" style="color:${getPingColor(server.ping_bd)}">${server.ping_bd === '0' ? 'TIMEOUT' : server.ping_bd + 'ms'}</span></div>
-          </div>`;
-
-        cardContentHtml += `
-          <a href="/?id=${server.id}" class="server-card" data-country="${cCode}">
-            <div class="server-card-header">
-              <div class="server-identity">
-                <div class="status-indicator" style="background:${statusColor}; box-shadow: 0 0 8px ${statusColor};"></div>
-                ${flagHtml}
-                <span class="server-name">${server.name}</span>
-              </div>
-              <span class="status-label" style="color:${statusColor}; border-color:${statusColor};">${statusText}</span>
-            </div>
-            
-            <div class="server-meta">
-              ${metaHtml}
-              <div class="card-badges">${badgesHtml}</div>
-            </div>
-            
-            <div class="server-stats">
-              <div class="stat-row">
-                <span class="stat-key">CPU</span>
-                <div class="stat-bar-container">
-                  <div class="stat-bar-fill" style="width:${cpu}%; background: var(--accent-cyan);"></div>
-                </div>
-                <span class="stat-value">${cpu}%</span>
-              </div>
-              <div class="stat-row">
-                <span class="stat-key">RAM</span>
-                <div class="stat-bar-container">
-                  <div class="stat-bar-fill" style="width:${ram}%; background: var(--accent-purple);"></div>
-                </div>
-                <span class="stat-value">${ram}%</span>
-              </div>
-              <div class="stat-row">
-                <span class="stat-key">DISK</span>
-                <div class="stat-bar-container">
-                  <div class="stat-bar-fill" style="width:${disk}%; background: var(--accent-green);"></div>
-                </div>
-                <span class="stat-value">${disk}%</span>
-              </div>
-              <div class="stat-row">
-                <span class="stat-key">NET</span>
-                <span class="net-down">▼ ${netInSpeed}/s</span>
-                <span class="net-up">▲ ${netOutSpeed}/s</span>
-              </div>
-              <div class="stat-row">
-                <span class="stat-key">TRF</span>
-                <span class="net-down">▼ ${monthlyRx}</span>
-                <span class="net-up">▲ ${monthlyTx}</span>
-              </div>
-            </div>
-            
-            ${pingHtml}
-          </a>`;
-
-        tableBodyHtml += `
-          <tr onclick="window.location.href='/?id=${server.id}'" style="cursor:pointer;" data-country="${cCode}">
-            <td style="text-align:center;"><div class="status-indicator" style="background:${statusColor}; display:inline-block; margin:0; width:8px; height:8px;"></div></td>
-            <td><b>${server.name}</b></td>
-            <td>${flagHtml} ${cCode.toUpperCase()}</td>
-            <td><span class="os-label">${server.arch || 'KVM'} / ${server.cpu_cores || 'N/A'}C</span></td>
-            <td>
-              <div class="table-stat">
-                <div class="stat-bar-container" style="width:60px;">
-                  <div class="stat-bar-fill" style="width:${cpu}%; background: var(--accent-cyan);"></div>
-                </div>
-                <span>${cpu}%</span>
-              </div>
-            </td>
-            <td>
-              <div class="table-stat">
-                <div class="stat-bar-container" style="width:60px;">
-                  <div class="stat-bar-fill" style="width:${ram}%; background: var(--accent-purple);"></div>
-                </div>
-                <span>${ram}%</span>
-              </div>
-            </td>
-            <td>
-              <div class="table-stat">
-                <div class="stat-bar-container" style="width:60px;">
-                  <div class="stat-bar-fill" style="width:${disk}%; background: var(--accent-green);"></div>
-                </div>
-                <span>${disk}%</span>
-              </div>
-            </td>
-            <td>${netInSpeed}/s</td>
-            <td>${netOutSpeed}/s</td>
-            <td>${monthlyRx}</td>
-            <td>${monthlyTx}</td>
-            <td class="update-time">${Math.round((now - lastUpdated)/1000)}s ago</td>
-          </tr>`;
-      }
-      cardContentHtml += `</div></div>`;
-    }
-  }
-
   const themeStyles = getThemeStyles(sys);
   
   const html = `<!DOCTYPE html>
@@ -339,7 +108,7 @@ export async function handleDashboard(request, env, sys) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${sys.site_title}</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-  <script id="map-data" type="application/json">${JSON.stringify(countryStats)}</script>
+  <script id="map-data" type="application/json">{}</script>
   ${sys.custom_head || ''}
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -874,7 +643,13 @@ export async function handleDashboard(request, env, sys) {
       font-size: 13px;
     }
     
-    /* 滚动条 */
+    .loading-state {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 40px;
+      font-size: 13px;
+    }
+    
     ::-webkit-scrollbar {
       width: 8px;
       height: 8px;
@@ -940,41 +715,38 @@ export async function handleDashboard(request, env, sys) {
       </div>
       
       <div class="filter-bar" id="ajax-filters">
-        ${filterTagsHtml}
+        <span class="filter-tag active" data-filter="all">[All] 0</span>
       </div>
     </div>
 
-    <!-- 全局统计 -->
     <div class="global-stats" id="ajax-stats">
       <div class="stat-item">
         <div class="stat-label">Total Servers</div>
-        <div class="stat-main-value">${results.length}</div>
+        <div class="stat-main-value">-</div>
         <div class="stat-sub-info">
-          <span style="color:var(--accent-green);">ON:${globalOnline}</span> | 
-          <span style="color:var(--accent-red);">OFF:${globalOffline}</span>
+          <span style="color:var(--accent-green);">ON:0</span> | 
+          <span style="color:var(--accent-red);">OFF:0</span>
         </div>
       </div>
       <div class="stat-item">
-        <div class="stat-label">
-          Total Traffic ${sys.auto_reset_traffic === 'true' ? '[MONTH]' : ''}
-        </div>
-        <div class="stat-main-value" style="font-size:16px;">${formatBytes(globalNetRx)} ↓ | ↑ ${formatBytes(globalNetTx)}</div>
+        <div class="stat-label">Total Traffic ${sys.auto_reset_traffic === 'true' ? '[MONTH]' : ''}</div>
+        <div class="stat-main-value" style="font-size:16px;">- ↓ | ↑ -</div>
       </div>
       <div class="stat-item">
         <div class="stat-label">Real-time Speed</div>
         <div class="stat-main-value" style="font-size:16px;">
-          <span style="color:var(--accent-green);">↓ ${formatBytes(globalSpeedIn)}/s</span> | 
-          <span style="color:var(--accent-blue);">↑ ${formatBytes(globalSpeedOut)}/s</span>
+          <span style="color:var(--accent-green);">↓ -/s</span> | 
+          <span style="color:var(--accent-blue);">↑ -/s</span>
         </div>
       </div>
     </div>
 
-    <!-- 卡片视图 -->
     <div id="view-card" class="view-panel active">
-      <div id="ajax-cards">${cardContentHtml}</div>
+      <div id="ajax-cards">
+        <div class="loading-state">[*] Loading data...</div>
+      </div>
     </div>
 
-    <!-- 表格视图 -->
     <div id="view-table" class="view-panel">
       <div class="table-container">
         <table class="terminal-table">
@@ -995,7 +767,7 @@ export async function handleDashboard(request, env, sys) {
             </tr>
           </thead>
           <tbody id="ajax-table">
-            ${tableBodyHtml || '<tr><td colspan="12" style="text-align:center; color:var(--text-muted);">[*] No data available</td></tr>'}
+            <tr><td colspan="12" style="text-align:center; color:var(--text-muted);">[*] Loading data...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1353,6 +1125,7 @@ export async function handleDashboard(request, env, sys) {
       const savedView = localStorage.getItem('monitor_preferred_view') || 'card';
       switchView(savedView);
       bindFilterEvents();
+      refreshData();
     });
 
     async function refreshData() {

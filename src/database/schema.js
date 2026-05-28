@@ -633,7 +633,7 @@ export async function cleanupOldData(db, force = false) {
     const lastClean = await db.prepare(`SELECT value FROM settings WHERE key = 'last_cleanup'`).first();
     const now = Date.now();
     const oneHour = 60 * 60 * 1000;
-    const threeDays = 3 * 24 * 60 * 60 * 1000;
+    const delDate = 1 * 24 * 60 * 60 * 1000; // 删除1天前的数据
     
     const shouldRun = force || !lastClean || (now - parseInt(lastClean.value)) > oneHour;
     
@@ -678,7 +678,7 @@ export async function cleanupOldData(db, force = false) {
       });
     }
     
-    const cutoff = now - threeDays;
+    const cutoff = now - delDate;
     const intDeleteResult = await db.prepare(
       `DELETE FROM metrics_history WHERE typeof(timestamp) = 'integer' AND timestamp < ?`
     ).bind(cutoff).run();
