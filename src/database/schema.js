@@ -494,16 +494,15 @@ export async function getMetricsHistory(db, serverId, hours, columns) {
 
   const aggColumns = mapColumnsToAggregated(columns);
 
-  // 最近30分钟的数据从原始表读取
-  const rawCutoff = now - (0.5 * 60 * 60 * 1000);
+  // 获取真实聚合完成时间
+  const lastAggregatedTo = await getLastAggregatedTo(db);
+
+  // 如果没有聚合记录，则默认最近30分钟走原始数据
+  const rawCutoff = lastAggregatedTo || (
+    now - (0.5 * 60 * 60 * 1000)
+  );
 
   let result = [];
-
-  // =========================
-  // 查询最近30分钟原始数据
-  // =========================
-
-  const rawStart = Math.max(cutoff, rawCutoff);
 
   console.log(
     '[History]',
@@ -513,9 +512,19 @@ export async function getMetricsHistory(db, serverId, hours, columns) {
     hours,
     'cutoff:',
     new Date(cutoff).toISOString(),
-    'rawStart:',
-    new Date(rawStart).toISOString()
+    'rawCutoff:',
+    new Date(rawCutoff).toISOString(),
+    'lastAggregatedTo:',
+    lastAggregatedTo
+      ? new Date(lastAggregatedTo).toISOString()
+      : 'null'
   );
+
+  // =========================================
+  // 查询原始数据（聚合时间之后的数据）
+  // =========================================
+
+  const rawStart = Math.max(cutoff, rawCutoff);
 
   const rawResult = await db.prepare(`
     SELECT timestamp, ${columns}
@@ -524,7 +533,10 @@ export async function getMetricsHistory(db, serverId, hours, columns) {
       AND typeof(timestamp) = 'integer'
       AND timestamp >= ?
     ORDER BY timestamp ASC
-  `).bind(serverId, rawStart).all();
+  `).bind(
+    serverId,
+    rawStart
+  ).all();
 
   const rawData = rawResult.results.map(row => ({
     ...row,
@@ -533,18 +545,26 @@ export async function getMetricsHistory(db, serverId, hours, columns) {
 
   result = result.concat(rawData);
 
-  // =========================
-  // 查询30分钟以前的聚合数据
-  // =========================
+  console.log(
+    `[History] 原始数据 ${rawData.length} 条`
+  );
+
+  // =========================================
+  // 查询聚合数据（聚合完成时间之前的数据）
+  // =========================================
 
   for (const phase of AGGREGATE_PHASES) {
     const phaseStart = now - (phase.maxHours * 60 * 60 * 1000);
     const phaseEnd = now - (phase.minHours * 60 * 60 * 1000);
 
     const queryStart = Math.max(cutoff, phaseStart);
+
+    // 聚合数据最多只查到真实聚合完成时间
     const queryEnd = Math.min(phaseEnd, rawCutoff);
 
-    if (queryStart >= queryEnd) continue;
+    if (queryStart >= queryEnd) {
+      continue;
+    }
 
     const aggResult = await db.prepare(`
       SELECT 
@@ -568,17 +588,21 @@ export async function getMetricsHistory(db, serverId, hours, columns) {
       timestamp: Number(row.timestamp)
     }));
 
+    console.log(
+      `[History] 聚合阶段 ${phase.name}: ${phaseData.length} 条`
+    );
+
     result = result.concat(phaseData);
   }
 
-  // =========================
-  // 时间排序
-  // =========================
+  // =========================================
+  // 排序
+  // =========================================
 
   result.sort((a, b) => a.timestamp - b.timestamp);
 
   console.log(
-    `[History] 返回 ${result.length} 条数据`
+    `[History] 最终返回 ${result.length} 条数据`
   );
 
   return result;
