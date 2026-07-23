@@ -43,7 +43,7 @@ const defaults = {
   custom_ct: 'gd-ct-dualstack.ip.zstaticcdn.com',
   custom_cu: 'gd-cu-dualstack.ip.zstaticcdn.com',
   custom_cm: 'gd-cm-dualstack.ip.zstaticcdn.com',
-  custom_bd: 'lf3-ips.zstaticcdn.com',
+  custom_bd: 'ip.zstaticcdn.com',
   expire_reminder: 'false',
   history_id_optimized: 'false',
   servers_optimized: 'false'
